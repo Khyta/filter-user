@@ -22,22 +22,22 @@ async function getUsername(event: MenuItemOnPressEvent, context: Devvit.Context)
 
   // Check if authorId exists before proceeding
   if (!thing.authorId) {
-    throw 'The post or comment does not have an authorId'; // Or handle it differently
+    throw 'The post or comment does not have an authorId';
   }
 
   const author = await reddit.getUserById(thing.authorId);
 
   // Optional: Handle the case where author itself is undefined
   if (!author) {
-    throw 'Could not find the author'; // Or handle it differently
+    throw 'Could not find the author';
   }
 
   // Provide a default value or handle the case where username is undefined
   return author.username || '[]';
 }
 
-async function updateAutomodConfig(usernameToAdd: string, context: Devvit.Context) {
-  const { ui, reddit, settings } = context;
+async function updateAutomodConfig(usernameToAdd: string, context: Devvit.Context, event: MenuItemOnPressEvent) {
+  const { ui, reddit, settings, redis } = context;
 
   try {
     const subreddit = await reddit.getSubredditById(context.subredditId);
@@ -98,6 +98,19 @@ async function updateAutomodConfig(usernameToAdd: string, context: Devvit.Contex
       subredditName
     });
 
+    // Add a mod note about the addition
+    await reddit.addModNote({
+      subreddit: subredditName,
+      user: usernameToAdd,
+      redditId: event.targetId,
+      note: `Added to AutoMod filter list`
+    });
+
+    // Store the timestamp of the addition
+    const timestamp = Date.now();
+    await redis.set(`user_last_action_time:${usernameToAdd}`, timestamp.toString());
+    await redis.set(`user_last_action:${usernameToAdd}`, 'added to filter');
+
     ui.showToast(`Added user ${usernameToAdd} to the AutoMod filter list.`);
 
   } catch (error) {
@@ -112,11 +125,13 @@ async function checkLastActionTime(username: string, context: Devvit.Context) {
 
   try {
     const timestampStr = await redis.get(`user_last_action_time:${username}`);
+    const lastAction = await redis.get(`user_last_action:${username}`);
+
     if (timestampStr) {
       const timestamp = parseInt(timestampStr);
       const date = new Date(timestamp);
       const formattedDate = date.toISOString().slice(0, 19).replace('T', ' ');
-      ui.showToast(`Last action for ${username} was on ${formattedDate} (UTC)`);
+      ui.showToast(`Last action for ${username} was ${lastAction} on ${formattedDate} (UTC)`);
     } else {
       ui.showToast(`No action history found for ${username}`);
     }
@@ -127,8 +142,8 @@ async function checkLastActionTime(username: string, context: Devvit.Context) {
 }
 
 // Function to remove a user from the AutoModerator config
-async function removeUserFromFilter(usernameToRemove: string, context: Devvit.Context) {
-  const { ui, reddit, settings } = context;
+async function removeUserFromFilter(usernameToRemove: string, context: Devvit.Context, event: MenuItemOnPressEvent) {
+  const { ui, reddit, settings, redis } = context;
 
   try {
     const subreddit = await reddit.getSubredditById(context.subredditId);
@@ -163,9 +178,23 @@ async function removeUserFromFilter(usernameToRemove: string, context: Devvit.Co
         await reddit.updateWikiPage({
           content: newContent,
           page: 'config/automoderator',
-          reason: 'Removed user from filter list',
+          reason: `Removed ${usernameToRemove} from filter list`,
           subredditName
         });
+
+        // Add a mod note about the removal
+        await reddit.addModNote({
+          subreddit: subredditName,
+          user: usernameToRemove,
+          redditId: event.targetId,
+          note: `Removed from AutoMod filter list`
+        });
+
+        // Store the timestamp of the removal
+        const timestamp = Date.now();
+        await redis.set(`user_last_action_time:${usernameToRemove}`, timestamp.toString());
+        await redis.set(`user_last_action:${usernameToRemove}`, 'removed from filter');
+
         ui.showToast(`Removed user ${usernameToRemove} from the AutoMod filter list.`);
       } else {
         ui.showToast(`User ${usernameToRemove} not found in the filter list.`);
@@ -186,7 +215,7 @@ Devvit.addMenuItem({
   label: 'Add to Filter',
   onPress: async (event, context) => {
     const usernameToAdd = await getUsername(event, context);
-    await updateAutomodConfig(usernameToAdd, context);
+    await updateAutomodConfig(usernameToAdd, context, event);
   },
 });
 
@@ -194,10 +223,10 @@ Devvit.addMenuItem({
 Devvit.addMenuItem({
   location: 'comment',
   forUserType: 'moderator',
-  label: 'Check Last Action Time',
+  label: 'Check last Filter Time',
   onPress: async (event, context) => {
     const username = await getUsername(event, context);
-    await checkLastActionTime(username, context);
+    await checkLastActionTime(username, context, event);
   },
 });
 
@@ -208,7 +237,7 @@ Devvit.addMenuItem({
   label: 'Remove from Filter',
   onPress: async (event, context) => {
     const usernameToRemove = await getUsername(event, context);
-    await removeUserFromFilter(usernameToRemove, context);
+    await removeUserFromFilter(usernameToRemove, context, event);
   },
 });
 
