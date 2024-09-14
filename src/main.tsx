@@ -1,18 +1,10 @@
-import { Devvit, MenuItemOnPressEvent, SettingScope, WikiPage, RedditAPIClient } from '@devvit/public-api';
+import { Devvit, MenuItemOnPressEvent, WikiPage, RedditAPIClient } from '@devvit/public-api';
 
 // Enable Redis plugin (if needed for other features)
 Devvit.configure({
   redis: true,
   redditAPI: true,
 });
-
-Devvit.addSettings([
-  {
-    type: 'string',
-    name: 'subreddit_name',
-    label: 'Subreddit Name',
-  },
-]);
 
 // Get username from event 
 async function getUsername(event: MenuItemOnPressEvent, context: Devvit.Context) {
@@ -66,26 +58,26 @@ async function updateAutomodConfig(usernameToAdd: string, context: Devvit.Contex
       // Block exists, update the author list within it
       const existingBlock = currentContent.substring(startIndex, endIndex + endMarker.length);
       const authorListMatch = existingBlock.match(/author:\s*\n\s*((-\s*\w+\s*\n\s*)+)/);
-    
+
       if (authorListMatch) {
         let authorList = authorListMatch[1].trim();
         // Trim whitespace from each line in the author list
         authorList = authorList.split('\n').map(line => line.trim()).join('\n');
-    
+
         // Check if the username already exists in the list
         if (authorList.includes(`- ${usernameToAdd}`)) {
           ui.showToast(`User ${usernameToAdd} is already in the filter list.`);
           return;
         }
-    
+
         // Maintain indentation when adding a new user, handle empty list case
         const indentationMatch = authorList.match(/^\s*-\s*/);
-        const indentation = indentationMatch ? indentationMatch[0].replace(/-\s*/, '') : '    '; // Use 4 spaces if the list is empty
+        const indentation = indentationMatch ? indentationMatch[0].replace(/-\s*/, '') : '';
         const newAuthorList = authorList ? `${authorList}\n${indentation}- ${usernameToAdd}` : `${indentation}- ${usernameToAdd}`;
         newContent = currentContent.replace(authorListMatch[0], `author:\n${newAuthorList}\n`);
-    
+
         // Log the new content for debugging
-        console.log(newContent);
+        // console.log(newContent);
       } else {
         // Handle unexpected block format
         ui.showToast('Error: AutoMod config block has an unexpected format.');
@@ -95,7 +87,7 @@ async function updateAutomodConfig(usernameToAdd: string, context: Devvit.Contex
       // Block doesn't exist, create it
       newContent =
         currentContent +
-        `\n${beginMarker}\n---\nauthor:\n    - ${usernameToAdd}\naction: filter\naction_reason: Watchlisted user - [{{match}}]\n${endMarker}\n---\n`;
+        `\n${beginMarker}\n---\nauthor:\n    - ${usernameToAdd}\naction: filter\naction_reason: Watchlisted user\n---\n${endMarker}\n`;
     }
 
     // Update the wiki page
@@ -149,13 +141,25 @@ async function removeUserFromFilter(usernameToRemove: string, context: Devvit.Co
     const endMarker = '# END MANAGED BLOCK BY FILTER-USER APP';
 
     const startIndex = currentContent.indexOf(beginMarker);
-    const endIndex = currentContent.indexOf(endMarker);
+    const endIndex = currentContent.indexOf(endMarker) + endMarker.length;
 
     if (startIndex !== -1 && endIndex !== -1) {
-      const existingBlock = currentContent.substring(startIndex, endIndex + endMarker.length);
+      const existingBlock = currentContent.substring(startIndex, endIndex);
       const authorRegex = new RegExp(`- ${usernameToRemove}\\s*\\n?`, 'g');
+
       if (authorRegex.test(existingBlock)) {
-        const newContent = currentContent.replace(authorRegex, '').replace(/\n\s*\n/g, '\n');
+        // Replace only the line containing the username
+        let newContent = currentContent.replace(authorRegex, ''); 
+        newContent = newContent.replace(/\n\s*\n/g, '\n'); // Clean up extra newlines
+
+        // Check if the author list is now empty
+        const updatedBlock = newContent.substring(startIndex, endIndex);
+        const authorListMatch = updatedBlock.match(/author:\s*\n\s*(-\s*\w+\s*\n)*/);
+
+        if (authorListMatch && (!authorListMatch[1] || authorListMatch[1].trim() === '')) {
+          newContent = currentContent.replace(existingBlock, ''); // Remove the entire block
+        }
+
         await reddit.updateWikiPage({
           content: newContent,
           page: 'config/automoderator',
@@ -179,7 +183,7 @@ async function removeUserFromFilter(usernameToRemove: string, context: Devvit.Co
 Devvit.addMenuItem({
   location: 'comment',
   forUserType: 'moderator',
-  label: 'Add User to Filter',
+  label: 'Add to Filter',
   onPress: async (event, context) => {
     const usernameToAdd = await getUsername(event, context);
     await updateAutomodConfig(usernameToAdd, context);
@@ -201,7 +205,7 @@ Devvit.addMenuItem({
 Devvit.addMenuItem({
   location: 'comment',
   forUserType: 'moderator',
-  label: 'Remove User from Filter',
+  label: 'Remove from Filter',
   onPress: async (event, context) => {
     const usernameToRemove = await getUsername(event, context);
     await removeUserFromFilter(usernameToRemove, context);
