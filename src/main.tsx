@@ -1,39 +1,196 @@
-import { Devvit, MenuItemOnPressEvent, RedditAPIClient } from '@devvit/public-api';
+import { Devvit, MenuItemOnPressEvent, SettingScope, WikiPage, RedditAPIClient } from '@devvit/public-api';
 
-// Ensure Reddit API plugin is enabled
+// Enable Redis plugin (if needed for other features)
 Devvit.configure({
+  redis: true,
   redditAPI: true,
-  // other plugins
 });
 
-// Function to fetch and display the first line of the automoderator wiki page
-async function getAutomoderatorWikiFirstLine(event: MenuItemOnPressEvent, context: Devvit.Context) {
-  const { ui, reddit } = context;
+Devvit.addSettings([
+  {
+    type: 'string',
+    name: 'subreddit_name',
+    label: 'Subreddit Name',
+  },
+]);
+
+// Get username from event 
+async function getUsername(event: MenuItemOnPressEvent, context: Devvit.Context) {
+  const { location, targetId } = event;
+  const { reddit } = context;
+  let thing;
+
+  if (location === 'post') {
+    thing = await reddit.getPostById(targetId);
+  } else if (location === 'comment') {
+    thing = await reddit.getCommentById(targetId);
+  } else {
+    throw 'Cannot find a post or comment with that ID';
+  }
+
+  // Check if authorId exists before proceeding
+  if (!thing.authorId) {
+    throw 'The post or comment does not have an authorId'; // Or handle it differently
+  }
+
+  const author = await reddit.getUserById(thing.authorId);
+
+  // Optional: Handle the case where author itself is undefined
+  if (!author) {
+    throw 'Could not find the author'; // Or handle it differently
+  }
+
+  // Provide a default value or handle the case where username is undefined
+  return author.username || '[deleted]';
+}
+
+async function updateAutomodConfig(usernameToAdd: string, context: Devvit.Context) {
+  const { ui, reddit, settings } = context;
 
   try {
-    // Get the current subreddit name dynamically
     const subreddit = await reddit.getSubredditById(context.subredditId);
-    const subredditName = subreddit.name;
+    const subredditName = subreddit.name as string;
 
-    const wikiPage = await reddit.getWikiPage(subredditName, '/config/automoderator');
+    // Fetch the current wiki page
+    const wikiPage = await reddit.getWikiPage(subredditName, 'config/automoderator');
+    const currentContent = wikiPage.content;
 
-    if (wikiPage && wikiPage.content) {
-      const firstLine = wikiPage.content.split('\n')[0];
-      ui.showToast(firstLine); 
+    const beginMarker = '# BEGIN MANAGED BLOCK BY FILTER-USER APP';
+    const endMarker = '# END MANAGED BLOCK BY FILTER-USER APP';
+
+    const startIndex = currentContent.indexOf(beginMarker);
+    const endIndex = currentContent.indexOf(endMarker);
+
+    let newContent;
+    if (startIndex !== -1 && endIndex !== -1) {
+      // Block exists, update it
+      const existingBlock = currentContent.substring(startIndex, endIndex + endMarker.length);
+      const authorList = existingBlock.match(/author:\s*\n\s*((-\s*\w+\s*\n\s*)+)/);
+
+      if (authorList) {
+        const newAuthorList = authorList[1].trim() + `\n    - ${usernameToAdd}`;
+        newContent = currentContent.replace(existingBlock,
+          `${beginMarker}\n---\n${newAuthorList}\naction: filter\naction_reason: Watchlisted user - [{{match}}]\n${endMarker}\n---\n`);
+      } else {
+        // Handle unexpected block format
+        ui.showToast('Error: AutoMod config block has an unexpected format.');
+        return;
+      }
     } else {
-      ui.showToast('Automoderator wiki page not found or is empty.');
+      // Block doesn't exist, create it
+      newContent =
+        currentContent +
+        `\n${beginMarker}\n---\nauthor:\n    - ${usernameToAdd}\naction: filter\naction_reason: Watchlisted user - [{{match}}]\n${endMarker}\n---\n`;
     }
+
+    // Update the wiki page
+    await reddit.updateWikiPage({
+      content: newContent,
+      page: 'config/automoderator',
+      reason: 'Added user to filter list',
+      subredditName
+    });
+
+    ui.showToast(`Added user ${usernameToAdd} to the AutoMod filter list.`);
+
   } catch (error) {
-    console.error('Error fetching wiki page:', error);
-    ui.showToast('An error occurred while fetching the wiki page.');
+    console.error('Error updating AutoMod config:', error);
+    ui.showToast('An error occurred while updating the AutoMod config. Please try again.');
   }
 }
 
+// Function to check the last action time for a user
+async function checkLastActionTime(username: string, context: Devvit.Context) {
+  const { ui, redis } = context;
+
+  try {
+    const timestampStr = await redis.get(`user_last_action_time:${username}`);
+    if (timestampStr) {
+      const timestamp = parseInt(timestampStr);
+      const date = new Date(timestamp);
+      const formattedDate = date.toISOString().slice(0, 19).replace('T', ' ');
+      ui.showToast(`Last action for ${username} was on ${formattedDate} (UTC)`);
+    } else {
+      ui.showToast(`No action history found for ${username}`);
+    }
+  } catch (error) {
+    console.error('Error checking last action time:', error);
+    ui.showToast('An error occurred while checking the last action time. Please try again.');
+  }
+}
+
+// Function to remove a user from the AutoModerator config
+async function removeUserFromFilter(usernameToRemove: string, context: Devvit.Context) {
+  const { ui, reddit, settings } = context;
+
+  try {
+    const subreddit = await reddit.getSubredditById(context.subredditId);
+    const subredditName = subreddit.name as string;
+
+    const wikiPage = await reddit.getWikiPage(subredditName, 'config/automoderator');
+    const currentContent = wikiPage.content;
+
+    const beginMarker = '# BEGIN MANAGED BLOCK BY FILTER-USER APP';
+    const endMarker = '# END MANAGED BLOCK BY FILTER-USER APP';
+
+    const startIndex = currentContent.indexOf(beginMarker);
+    const endIndex = currentContent.indexOf(endMarker);
+
+    if (startIndex !== -1 && endIndex !== -1) {
+      const existingBlock = currentContent.substring(startIndex, endIndex + endMarker.length);
+      const authorRegex = new RegExp(`- ${usernameToRemove}`);
+      if (authorRegex.test(existingBlock)) {
+        const newContent = currentContent.replace(authorRegex, '');
+        await reddit.updateWikiPage({
+          content: newContent,
+          page: 'config/automoderator',
+          reason: 'Removed user from filter list',
+          subredditName
+        });
+        ui.showToast(`Removed user ${usernameToRemove} from the AutoMod filter list.`);
+      } else {
+        ui.showToast(`User ${usernameToRemove} not found in the filter list.`);
+      }
+    } else {
+      ui.showToast('AutoMod config block not found.');
+    }
+  } catch (error) {
+    console.error('Error removing user from filter:', error);
+    ui.showToast('An error occurred while removing the user from the filter. Please try again.');
+  }
+}
+
+// Add menu item to add a user to the filter list
 Devvit.addMenuItem({
   location: 'comment',
-  forUserType: 'moderator', 
-  label: 'Get Automoderator Wiki First Line',
-  onPress: getAutomoderatorWikiFirstLine,
+  forUserType: 'moderator',
+  label: 'Add User to Filter',
+  onPress: async (event, context) => {
+    const usernameToAdd = await getUsername(event, context);
+    await updateAutomodConfig(usernameToAdd, context);
+  },
+});
+
+// Add menu item to check the last action time
+Devvit.addMenuItem({
+  location: 'comment',
+  forUserType: 'moderator',
+  label: 'Check Last Action Time',
+  onPress: async (event, context) => {
+    const username = await getUsername(event, context);
+    await checkLastActionTime(username, context);
+  },
+});
+
+// Add menu item to remove a user from the filter
+Devvit.addMenuItem({
+  location: 'comment',
+  forUserType: 'moderator',
+  label: 'Remove User from Filter',
+  onPress: async (event, context) => {
+    const usernameToRemove = await getUsername(event, context);
+    await removeUserFromFilter(usernameToRemove, context);
+  },
 });
 
 export default Devvit;
