@@ -41,7 +41,7 @@ async function getUsername(event: MenuItemOnPressEvent, context: Devvit.Context)
   }
 
   // Provide a default value or handle the case where username is undefined
-  return author.username || '[deleted]';
+  return author.username || '[]';
 }
 
 async function updateAutomodConfig(usernameToAdd: string, context: Devvit.Context) {
@@ -63,14 +63,29 @@ async function updateAutomodConfig(usernameToAdd: string, context: Devvit.Contex
 
     let newContent;
     if (startIndex !== -1 && endIndex !== -1) {
-      // Block exists, update it
+      // Block exists, update the author list within it
       const existingBlock = currentContent.substring(startIndex, endIndex + endMarker.length);
-      const authorList = existingBlock.match(/author:\s*\n\s*((-\s*\w+\s*\n\s*)+)/);
-
-      if (authorList) {
-        const newAuthorList = authorList[1].trim() + `\n    - ${usernameToAdd}`;
-        newContent = currentContent.replace(existingBlock,
-          `${beginMarker}\n---\n${newAuthorList}\naction: filter\naction_reason: Watchlisted user - [{{match}}]\n${endMarker}\n---\n`);
+      const authorListMatch = existingBlock.match(/author:\s*\n\s*((-\s*\w+\s*\n\s*)+)/);
+    
+      if (authorListMatch) {
+        let authorList = authorListMatch[1].trim();
+        // Trim whitespace from each line in the author list
+        authorList = authorList.split('\n').map(line => line.trim()).join('\n');
+    
+        // Check if the username already exists in the list
+        if (authorList.includes(`- ${usernameToAdd}`)) {
+          ui.showToast(`User ${usernameToAdd} is already in the filter list.`);
+          return;
+        }
+    
+        // Maintain indentation when adding a new user, handle empty list case
+        const indentationMatch = authorList.match(/^\s*-\s*/);
+        const indentation = indentationMatch ? indentationMatch[0].replace(/-\s*/, '') : '    '; // Use 4 spaces if the list is empty
+        const newAuthorList = authorList ? `${authorList}\n${indentation}- ${usernameToAdd}` : `${indentation}- ${usernameToAdd}`;
+        newContent = currentContent.replace(authorListMatch[0], `author:\n${newAuthorList}\n`);
+    
+        // Log the new content for debugging
+        console.log(newContent);
       } else {
         // Handle unexpected block format
         ui.showToast('Error: AutoMod config block has an unexpected format.');
@@ -138,9 +153,9 @@ async function removeUserFromFilter(usernameToRemove: string, context: Devvit.Co
 
     if (startIndex !== -1 && endIndex !== -1) {
       const existingBlock = currentContent.substring(startIndex, endIndex + endMarker.length);
-      const authorRegex = new RegExp(`- ${usernameToRemove}`);
+      const authorRegex = new RegExp(`- ${usernameToRemove}\\s*\\n?`, 'g');
       if (authorRegex.test(existingBlock)) {
-        const newContent = currentContent.replace(authorRegex, '');
+        const newContent = currentContent.replace(authorRegex, '').replace(/\n\s*\n/g, '\n');
         await reddit.updateWikiPage({
           content: newContent,
           page: 'config/automoderator',
