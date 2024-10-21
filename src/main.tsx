@@ -56,6 +56,14 @@ async function removeUserFromFilter(usernameToRemove: string, context: Devvit.Co
     await redis.set(`user_last_action:${usernameToRemove}`, 'removed from filter');
 
     ui.showToast(`Removed user ${usernameToRemove} from the filter list.`);
+
+    // Add a mod note about the removal
+    await reddit.addModNote({
+      subreddit: subredditName,
+      user: usernameToRemove,
+      redditId: event.targetId,
+      note: `Removed from filter list`
+    })
   } catch (error) {
     console.error('Error removing user from filter:', error);
     ui.showToast('An error occurred while removing the user from the filter. Please try again.');
@@ -91,7 +99,7 @@ async function addToFilterList(usernameToAdd: string, context: Devvit.Context, e
       subreddit: subredditName,
       user: usernameToAdd,
       redditId: event.targetId,
-      note: `Added to AutoMod filter list`
+      note: `Added to filter list`
     })
   } catch (error) {
     console.error('Error updating filter list:', error);
