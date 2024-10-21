@@ -10,6 +10,8 @@ remove users from it. The backend used to store the users is redis.
 - Check when the last time the filter rule for that specific user was
   updated. This is supported both through an additional button in the comment
   interface and through the user notes.
+- Check for which comment this user was added/removed from the filter rule. This
+  is supported through the user notes.
 
 # Usecase
 
