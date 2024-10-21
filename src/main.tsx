@@ -1,6 +1,6 @@
-import { Devvit, MenuItemOnPressEvent, WikiPage, RedditAPIClient } from '@devvit/public-api';
+import { Devvit, MenuItemOnPressEvent } from '@devvit/public-api';
 
-// Enable Redis plugin (if needed for other features)
+// Enable Redis plugin
 Devvit.configure({
   redis: true,
   redditAPI: true,
@@ -20,106 +20,77 @@ async function getUsername(event: MenuItemOnPressEvent, context: Devvit.Context)
     throw 'Cannot find a post or comment with that ID';
   }
 
-  // Check if authorId exists before proceeding
   if (!thing.authorId) {
     throw 'The post or comment does not have an authorId';
   }
 
   const author = await reddit.getUserById(thing.authorId);
 
-  // Optional: Handle the case where author itself is undefined
   if (!author) {
     throw 'Could not find the author';
   }
 
-  // Provide a default value or handle the case where username is undefined
   return author.username || '[]';
 }
 
-async function updateAutomodConfig(usernameToAdd: string, context: Devvit.Context, event: MenuItemOnPressEvent) {
-  const { ui, reddit, settings, redis } = context;
+async function removeUserFromFilter(usernameToRemove: string, context: Devvit.Context, event: MenuItemOnPressEvent) {
+  const { ui, redis, reddit } = context;
 
   try {
     const subreddit = await reddit.getSubredditById(context.subredditId);
     const subredditName = subreddit.name as string;
 
-    // Fetch the current wiki page
-    const wikiPage = await reddit.getWikiPage(subredditName, 'config/automoderator');
-    const currentContent = wikiPage.content;
+    const filteredUsers = await redis.get('filtered_users');
+    const userList = filteredUsers ? JSON.parse(filteredUsers) : [];
 
-    const beginMarker = '# BEGIN MANAGED BLOCK BY FILTER-USER APP';
-    const endMarker = '# END MANAGED BLOCK BY FILTER-USER APP';
-
-    const startIndex = currentContent.indexOf(beginMarker);
-    const endIndex = currentContent.indexOf(endMarker);
-
-    let newContent;
-    if (startIndex !== -1 && endIndex !== -1) {
-      // Block exists, update the author list within it
-      const existingBlock = currentContent.substring(startIndex, endIndex + endMarker.length);
-      const authorListMatch = existingBlock.match(/author:\s*\n\s*((-\s*\w+\s*\n\s*)+)/);
-
-      if (authorListMatch) {
-        let authorList = authorListMatch[1].trim();
-        // Trim whitespace from each line in the author list
-        authorList = authorList.split('\n').map(line => line.trim()).join('\n');
-
-        // Check if the username already exists in the list
-        if (authorList.includes(`- ${usernameToAdd}`)) {
-          ui.showToast(`User ${usernameToAdd} is already in the filter list.`);
-          return;
-        }
-
-        // Maintain indentation when adding a new user, handle empty list case
-        const indentationMatch = authorList.match(/^\s*-\s*/);
-        const indentation = indentationMatch ? indentationMatch[0].replace(/-\s*/, '') : '';
-        const newAuthorList = authorList ? `${authorList}\n${indentation}- ${usernameToAdd}` : `${indentation}- ${usernameToAdd}`;
-        newContent = currentContent.replace(authorListMatch[0], `author:\n${newAuthorList}\n`);
-
-        // Log the new content for debugging
-        // console.log(newContent);
-      } else {
-        // Handle unexpected block format
-        ui.showToast('Error: AutoMod config block has an unexpected format.');
-        return;
-      }
-    } else {
-      // Block doesn't exist, create it
-      newContent =
-        currentContent +
-        `\n${beginMarker}\n---\nauthor:\n    - ${usernameToAdd}\naction: filter\naction_reason: Watchlisted user\n---\n${endMarker}\n`;
+    if (!userList.includes(usernameToRemove)) {
+      ui.showToast(`User ${usernameToRemove} not found in the filter list.`);
+      return;
     }
 
-    // Update the wiki page
-    await reddit.updateWikiPage({
-      content: newContent,
-      page: 'config/automoderator',
-      reason: 'Added user to filter list',
-      subredditName
-    });
+    const updatedUserList = userList.filter(user => user !== usernameToRemove);
+    await redis.set('filtered_users', JSON.stringify(updatedUserList));
 
-    // Add a mod note about the addition
-    await reddit.addModNote({
-      subreddit: subredditName,
-      user: usernameToAdd,
-      redditId: event.targetId,
-      note: `Added to AutoMod filter list`
-    });
+    const timestamp = Date.now();
+    await redis.set(`user_last_action_time:${usernameToRemove}`, timestamp.toString());
+    await redis.set(`user_last_action:${usernameToRemove}`, 'removed from filter');
 
-    // Store the timestamp of the addition
+    ui.showToast(`Removed user ${usernameToRemove} from the filter list.`);
+  } catch (error) {
+    console.error('Error removing user from filter:', error);
+    ui.showToast('An error occurred while removing the user from the filter. Please try again.');
+  }
+}
+
+async function updateFilterList(usernameToAdd: string, context: Devvit.Context, event: MenuItemOnPressEvent) {
+  const { ui, redis, reddit } = context;
+
+  try {
+    const subreddit = await reddit.getSubredditById(context.subredditId);
+    const subredditName = subreddit.name as string;
+
+    const filteredUsers = await redis.get('filtered_users');
+    const userList = filteredUsers ? JSON.parse(filteredUsers) : [];
+
+    if (userList.includes(usernameToAdd)) {
+      ui.showToast(`User ${usernameToAdd} is already in the filter list.`);
+      return;
+    }
+
+    userList.push(usernameToAdd);
+    await redis.set('filtered_users', JSON.stringify(userList));
+
     const timestamp = Date.now();
     await redis.set(`user_last_action_time:${usernameToAdd}`, timestamp.toString());
     await redis.set(`user_last_action:${usernameToAdd}`, 'added to filter');
 
-    ui.showToast(`Added user ${usernameToAdd} to the AutoMod filter list.`);
-
+    ui.showToast(`Added user ${usernameToAdd} to the filter list.`);
   } catch (error) {
-    console.error('Error updating AutoMod config:', error);
-    ui.showToast('An error occurred while updating the AutoMod config. Please try again.');
+    console.error('Error updating filter list:', error);
+    ui.showToast('An error occurred while updating the filter list. Please try again.');
   }
 }
 
-// Function to check the last action time for a user
 async function checkLastActionTime(username: string, context: Devvit.Context) {
   const { ui, redis } = context;
 
@@ -141,81 +112,15 @@ async function checkLastActionTime(username: string, context: Devvit.Context) {
   }
 }
 
-// Function to remove a user from the AutoModerator config
-async function removeUserFromFilter(usernameToRemove: string, context: Devvit.Context, event: MenuItemOnPressEvent) {
-  const { ui, reddit, settings, redis } = context;
-
-  try {
-    const subreddit = await reddit.getSubredditById(context.subredditId);
-    const subredditName = subreddit.name as string;
-
-    const wikiPage = await reddit.getWikiPage(subredditName, 'config/automoderator');
-    const currentContent = wikiPage.content;
-
-    const beginMarker = '# BEGIN MANAGED BLOCK BY FILTER-USER APP';
-    const endMarker = '# END MANAGED BLOCK BY FILTER-USER APP';
-
-    const startIndex = currentContent.indexOf(beginMarker);
-    const endIndex = currentContent.indexOf(endMarker) + endMarker.length;
-
-    if (startIndex !== -1 && endIndex !== -1) {
-      const existingBlock = currentContent.substring(startIndex, endIndex);
-      const authorRegex = new RegExp(`- ${usernameToRemove}\\s*\\n?`, 'g');
-
-      if (authorRegex.test(existingBlock)) {
-        // Replace only the line containing the username
-        let newContent = currentContent.replace(authorRegex, ''); 
-        newContent = newContent.replace(/\n\s*\n/g, '\n'); // Clean up extra newlines
-
-        // Check if the author list is now empty
-        const updatedBlock = newContent.substring(startIndex, endIndex);
-        const authorListMatch = updatedBlock.match(/author:\s*\n\s*(-\s*\w+\s*\n)*/);
-
-        if (authorListMatch && (!authorListMatch[1] || authorListMatch[1].trim() === '')) {
-          newContent = currentContent.replace(existingBlock, ''); // Remove the entire block
-        }
-
-        await reddit.updateWikiPage({
-          content: newContent,
-          page: 'config/automoderator',
-          reason: `Removed ${usernameToRemove} from filter list`,
-          subredditName
-        });
-
-        // Add a mod note about the removal
-        await reddit.addModNote({
-          subreddit: subredditName,
-          user: usernameToRemove,
-          redditId: event.targetId,
-          note: `Removed from AutoMod filter list`
-        });
-
-        // Store the timestamp of the removal
-        const timestamp = Date.now();
-        await redis.set(`user_last_action_time:${usernameToRemove}`, timestamp.toString());
-        await redis.set(`user_last_action:${usernameToRemove}`, 'removed from filter');
-
-        ui.showToast(`Removed user ${usernameToRemove} from the AutoMod filter list.`);
-      } else {
-        ui.showToast(`User ${usernameToRemove} not found in the filter list.`);
-      }
-    } else {
-      ui.showToast('AutoMod config block not found.');
-    }
-  } catch (error) {
-    console.error('Error removing user from filter:', error);
-    ui.showToast('An error occurred while removing the user from the filter. Please try again.');
-  }
-}
-
 // Add menu item to add a user to the filter list
 Devvit.addMenuItem({
   location: 'comment',
   forUserType: 'moderator',
   label: 'Add to Filter',
+  description: 'Adds the user to the filter list',
   onPress: async (event, context) => {
     const usernameToAdd = await getUsername(event, context);
-    await updateAutomodConfig(usernameToAdd, context, event);
+    await updateFilterList(usernameToAdd, context, event);
   },
 });
 
@@ -224,9 +129,10 @@ Devvit.addMenuItem({
   location: 'comment',
   forUserType: 'moderator',
   label: 'Check last Filter Time',
+  description: 'Checks when the last filter action was performed on the user',
   onPress: async (event, context) => {
     const username = await getUsername(event, context);
-    await checkLastActionTime(username, context, event);
+    await checkLastActionTime(username, context);
   },
 });
 
@@ -235,6 +141,7 @@ Devvit.addMenuItem({
   location: 'comment',
   forUserType: 'moderator',
   label: 'Remove from Filter',
+  description: 'Removes the user from the filter list',
   onPress: async (event, context) => {
     const usernameToRemove = await getUsername(event, context);
     await removeUserFromFilter(usernameToRemove, context, event);
