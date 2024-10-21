@@ -85,6 +85,14 @@ async function addToFilterList(usernameToAdd: string, context: Devvit.Context, e
     await redis.set(`user_last_action:${usernameToAdd}`, 'added to filter');
 
     ui.showToast(`Added user ${usernameToAdd} to the filter list.`);
+
+    // Add a mod note about the addition
+    await reddit.addModNote({
+      subreddit: subredditName,
+      user: usernameToAdd,
+      redditId: event.targetId,
+      note: `Added to AutoMod filter list`
+    })
   } catch (error) {
     console.error('Error updating filter list:', error);
     ui.showToast('An error occurred while updating the filter list. Please try again.');
