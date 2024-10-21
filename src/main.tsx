@@ -62,7 +62,7 @@ async function removeUserFromFilter(usernameToRemove: string, context: Devvit.Co
   }
 }
 
-async function updateFilterList(usernameToAdd: string, context: Devvit.Context, event: MenuItemOnPressEvent) {
+async function addToFilterList(usernameToAdd: string, context: Devvit.Context, event: MenuItemOnPressEvent) {
   const { ui, redis, reddit } = context;
 
   try {
@@ -120,7 +120,7 @@ Devvit.addMenuItem({
   description: 'Adds the user to the filter list',
   onPress: async (event, context) => {
     const usernameToAdd = await getUsername(event, context);
-    await updateFilterList(usernameToAdd, context, event);
+    await addToFilterList(usernameToAdd, context, event);
   },
 });
 
